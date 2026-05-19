@@ -12,13 +12,12 @@ import type {
   GerritChangeStatus,
   GerritLabelTypeInfo,
   GerritRequestDetail,
+  GerritServerInfo,
 } from './types.ts';
 
 export const MIN_GERRIT_VERSION = '3.0.0';
 
 export const TAG_PULL_REQUEST_BODY = 'pull-request';
-
-const DEFAULT_SSH_PORT = `29418`;
 
 /**
  * Max comment size in Gerrit (16kiB by default)
@@ -34,36 +33,15 @@ export const REQUEST_DETAILS_FOR_PRS: GerritRequestDetail[] = [
   'COMMIT_FOOTERS', // to get the commit message
 ] as const;
 
-export function getGerritRepoUrl(
-  repository: string,
+function generateUrlFromEndpoint(
   endpoint: string,
-  gitUrl: GitUrlOption | undefined,
+  opts: { username?: string; password?: string },
+  repository: string,
 ): string {
-  const endpointUrl = parseUrl(endpoint);
-  if (!endpointUrl) {
+  const url = parseUrl(endpoint);
+  if (!url) {
     throw new Error(CONFIG_GIT_URL_UNAVAILABLE);
   }
-
-  const url =
-    gitUrl === 'ssh'
-      ? createSshUrl(endpointUrl, repository)
-      : createHttpUrl(endpointUrl, endpoint, repository);
-  logger.trace({ url }, 'using URL based on configured endpoint');
-
-  return url;
-}
-
-function createSshUrl(url: URL, repository: string): string {
-  return `ssh://${url.host}:${DEFAULT_SSH_PORT}/${repository}`;
-}
-
-function createHttpUrl(url: URL, endpoint: string, repository: string): string {
-  // Find options for current host and determine Git endpoint
-  const opts = hostRules.find({
-    hostType: 'gerrit',
-    url: endpoint,
-  });
-
   if (!(opts.username && opts.password)) {
     throw new Error(
       'Init: You must configure a Gerrit Server username/password',
@@ -78,6 +56,44 @@ function createHttpUrl(url: URL, endpoint: string, repository: string): string {
     encodeURIComponent(repository),
   );
   return url.toString();
+}
+
+export function getGerritRepoUrl(
+  repository: string,
+  endpoint: string,
+  gitUrl: GitUrlOption | undefined,
+  serverInfo: GerritServerInfo,
+): string {
+  const opts = hostRules.find({
+    hostType: 'gerrit',
+    url: endpoint,
+  });
+
+  switch (gitUrl) {
+    case 'ssh': {
+      if (!serverInfo.download.schemes.ssh) {
+        throw new Error(CONFIG_GIT_URL_UNAVAILABLE);
+      }
+
+      const url = serverInfo.download.schemes.ssh.url.replace(
+        '{project}',
+        encodeURIComponent(repository),
+      );
+      logger.debug(`Using ssh URL: ${url}`);
+      return url;
+    }
+    case 'endpoint': {
+      const generatedUrl = generateUrlFromEndpoint(endpoint, opts, repository);
+      logger.debug(`Using endpoint URL: ${generatedUrl}`);
+      return generatedUrl;
+    }
+    case undefined:
+    case 'default': {
+      const generatedUrl = generateUrlFromEndpoint(endpoint, opts, repository);
+      logger.debug(`Using default URL: ${generatedUrl}`);
+      return generatedUrl;
+    }
+  }
 }
 
 export function mapPrStateToGerritFilter(state?: PrState): string | null {
